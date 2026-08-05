@@ -48,6 +48,24 @@ chmod 600 "${HOME}/.ssh/config"
 
 docker network create "$NET" >/dev/null 2>&1 || true
 
+# ponytail: pull the published node image, fall back to building the bundled
+# Dockerfile. Drop the fallback once the image is published to ghcr.
+ensure_image() {
+    local image="$1"
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        return 0
+    fi
+    if docker pull -q "$image" >/dev/null 2>&1; then
+        return 0
+    fi
+    local dockerfile="${CSIT_NODE_DOCKERFILE:-${GITHUB_ACTION_PATH:-$(dirname "$0")/..}/docker/Dockerfile.node}"
+    echo "---> ${image} unavailable, building from ${dockerfile}"
+    docker build -q -t "$image" -f "$dockerfile" "$(dirname "$dockerfile")" >/dev/null
+}
+
+ensure_image "$CSIT_NODE_IMAGE"
+[ "$CSIT_TOOLS_IMAGE" = "$CSIT_NODE_IMAGE" ] || ensure_image "$CSIT_TOOLS_IMAGE"
+
 start_node() {
     local name="$1" image="$2"
     docker run -d --name "$name" --hostname "$name" --network "$NET" \
