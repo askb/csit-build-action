@@ -21,7 +21,10 @@
 set -eu
 
 CSIT_SCRIPTS_DIR="${CSIT_SCRIPTS_DIR:?path to builder jjb/integration required}"
-WORKSPACE="${WORKSPACE:?}"
+# ponytail: WORKSPACE is Jenkins' name for what GHA calls GITHUB_WORKSPACE, and
+# builder's scripts read WORKSPACE, so bridge the two rather than patch them.
+WORKSPACE="${WORKSPACE:-${GITHUB_WORKSPACE:-$PWD}}"
+export WORKSPACE
 CSIT_LF_ENV="${CSIT_LF_ENV:-${CSIT_SCRIPTS_DIR}/../global-jjb/jenkins-init-scripts/lf-env.sh}"
 
 cd "$WORKSPACE"
