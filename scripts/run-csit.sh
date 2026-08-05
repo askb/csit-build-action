@@ -67,6 +67,10 @@ echo "=================================================="
 echo "  Running CSIT"
 echo "=================================================="
 if [ "${NUM_ODL_SYSTEM}" -gt 1 ]; then
+    # The 3node JJB template runs configure-clustering before the test; the
+    # 1node template folds the equivalent into deploy-controller-run-test.
+    echo "---> integration-configure-clustering.sh"
+    bash "${CSIT_SCRIPTS_DIR}/integration-configure-clustering.sh"
     runner="integration-start-cluster-run-test.sh"
 else
     runner="integration-deploy-controller-run-test.sh"
