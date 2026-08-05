@@ -37,7 +37,8 @@ jobs:
             set -eux
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
-            apt-get install -y -qq openvswitch-switch mininet iproute2 >/dev/null
+            apt-get install -y -qq openvswitch-switch mininet iproute2 \
+              iputils-ping net-tools >/dev/null
             mkdir -p /var/run/openvswitch /etc/openvswitch
             ovsdb-tool create /etc/openvswitch/conf.db \
               /usr/share/openvswitch/vswitch.ovsschema
@@ -57,7 +58,8 @@ jobs:
           set -eux
           docker exec probe bash -c '
             set -eux
-            mn --test pingall --topo single,3 2>&1 | tail -20
+            mn --test pingall --topo single,3 2>&1 | tee /tmp/mn.log | tail -20
+            grep -q "0% dropped" /tmp/mn.log
             echo "MININET_OK"
           '
 
