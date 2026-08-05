@@ -1,0 +1,66 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Answers one question: can a GitHub-hosted runner host the CSIT tools node
+# (Open vSwitch + mininet) in a container? If yes, ~131 mininet CSIT jobs can
+# use the docker backend and never touch OpenStack.
+name: Probe tools node support
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Kernel and module support on the runner
+        run: |
+          set -x
+          uname -a
+          modinfo openvswitch 2>&1 | head -3 || echo "NO openvswitch modinfo"
+          sudo modprobe openvswitch && echo "MODPROBE_OK" || echo "MODPROBE_FAIL"
+          lsmod | grep -E 'openvswitch|gre' || true
+
+      - name: Can a privileged container run OVS with the kernel datapath
+        run: |
+          set -eux
+          docker run -d --name probe --privileged \
+            -v /lib/modules:/lib/modules:ro \
+            ubuntu:22.04 sleep 900
+          docker exec probe bash -c '
+            set -eux
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq openvswitch-switch mininet iproute2 >/dev/null
+            mkdir -p /var/run/openvswitch /etc/openvswitch
+            ovsdb-tool create /etc/openvswitch/conf.db \
+              /usr/share/openvswitch/vswitch.ovsschema
+            ovsdb-server /etc/openvswitch/conf.db \
+              --remote=punix:/var/run/openvswitch/db.sock \
+              --pidfile --detach
+            ovs-vsctl --no-wait init
+            ovs-vswitchd --pidfile --detach
+            ovs-vsctl show
+            ovs-vsctl add-br testbr
+            ovs-vsctl show
+            echo "OVS_KERNEL_DATAPATH_OK"
+          '
+
+      - name: Can mininet build a topology in that container
+        run: |
+          set -eux
+          docker exec probe bash -c '
+            set -eux
+            mn --test pingall --topo single,3 2>&1 | tail -20
+            echo "MININET_OK"
+          '
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f probe || true
