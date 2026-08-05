@@ -39,10 +39,36 @@ case "$JDKVERSION" in
     *)         JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64" ;;
 esac
 
-# ponytail: xmllint replaces the old `xpath` perl one-liner; it is in libxml2
-# which every runner image already ships. No python, no extra dependency.
+# ponytail: the old `xpath` perl one-liner is replaced by python3 + stdlib
+# ElementTree. python3 is present on GitHub runners, ODL build VMs and the node
+# image, whereas xmllint/perl-XML-XPath are not. Only two queries are needed,
+# so they are named rather than a generic XPath evaluator.
 xml_text() {
-    xmllint --xpath "$2" "$1" 2>/dev/null
+    python3 - "$1" "$2" <<'PY'
+import sys, xml.etree.ElementTree as ET
+
+path, mode = sys.argv[1], sys.argv[2]
+root = ET.parse(path).getroot()
+tag = lambda e: e.tag.rsplit('}', 1)[-1]
+
+if mode == "project-version":
+    # The distribution version is the first /project/version, never a
+    # dependency's or the parent's, so only direct children are considered.
+    out = next((e.text for e in root if tag(e) == "version"), "")
+elif mode == "snapshot-zip":
+    out = ""
+    for sv in root.iter():
+        if tag(sv) != "snapshotVersion":
+            continue
+        kids = {tag(k): (k.text or "") for k in sv}
+        if kids.get("extension") == "zip":
+            out = kids.get("value", "")
+            break
+else:
+    sys.exit("unknown mode: " + mode)
+
+print((out or "").strip(), end="")
+PY
 }
 
 if [ "$BUNDLE_URL" = "last" ]; then
@@ -63,15 +89,14 @@ if [ "$BUNDLE_URL" = "last" ]; then
     curl -sSfL -o pom.xml "$pom"
 
     # The distribution version is the first /project/version, not a dependency's.
-    BUNDLE_VERSION=$(xml_text pom.xml '/*[local-name()="project"]/*[local-name()="version"]/text()')
+    BUNDLE_VERSION=$(xml_text pom.xml project-version)
     [ -n "$BUNDLE_VERSION" ] || { echo "ERROR: could not read version from $pom" >&2; exit 1; }
     echo "Bundle version is ${BUNDLE_VERSION}"
 
     NEXUSPATH="${NEXUSURL_PREFIX}/${ODL_NEXUS_REPO}/org/opendaylight/${KARAF_PROJECT}/${KARAF_ARTIFACT}"
     curl -sSfL -o maven-metadata.xml "${NEXUSPATH}/${BUNDLE_VERSION}/maven-metadata.xml"
 
-    TIMESTAMP=$(xml_text maven-metadata.xml \
-        'string(//snapshotVersion[extension="zip"][1]/value)')
+    TIMESTAMP=$(xml_text maven-metadata.xml snapshot-zip)
     [ -n "$TIMESTAMP" ] || { echo "ERROR: no zip snapshotVersion in maven-metadata.xml" >&2; exit 1; }
     echo "Nexus timestamp is ${TIMESTAMP}"
 
