@@ -127,6 +127,14 @@ inputs:
     description: "Extra robot command line options (TESTOPTIONS)"
     required: false
     default: ""
+  robot-pass-threshold:
+    description: "Fail the job if the robot pass rate is below this percentage"
+    required: false
+    default: "100.0"
+  robot-unstable-threshold:
+    description: "Warn if the robot pass rate is below this percentage"
+    required: false
+    default: "0.0"
   repo-url:
     description: "Extra feature repository artifact URL (REPO_URL)"
     required: false
@@ -189,6 +197,8 @@ runs:
         BUNDLE_URL: ${{ inputs.bundle-url }}
         REPO_URL: ${{ inputs.repo-url }}
         TESTOPTIONS: ${{ inputs.robot-options }}
+        ROBOT_PASS_THRESHOLD: ${{ inputs.robot-pass-threshold }}
+        ROBOT_UNSTABLE_THRESHOLD: ${{ inputs.robot-unstable-threshold }}
         CONTROLLERSCOPE: ${{ inputs.controller-scope }}
         CONTROLLERFEATURES: ${{ inputs.install-features }}
         CONTROLLERDEBUGMAP: ${{ inputs.debug-map }}

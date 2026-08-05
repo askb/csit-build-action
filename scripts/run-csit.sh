@@ -77,3 +77,12 @@ else
 fi
 echo "---> ${runner}"
 bash "${CSIT_SCRIPTS_DIR}/${runner}"
+
+# builder's run scripts end the robot call with `|| true`: on Jenkins the build
+# result comes from the Robot plugin parsing output.xml against the
+# robot-pass/unstable-threshold job parameters, not from the shell exit code.
+# GHA has no such plugin, so apply the same thresholds here.
+echo "---> robot result gate (pass>=${ROBOT_PASS_THRESHOLD:-100.0}%)"
+python3 "$(dirname "${BASH_SOURCE[0]}")/robot-gate.py" \
+    "${WORKSPACE}/output.xml" \
+    "${ROBOT_PASS_THRESHOLD:-100.0}" "${ROBOT_UNSTABLE_THRESHOLD:-0.0}"
