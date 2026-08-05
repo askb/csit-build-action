@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 #
-# CSIT controller node. Stands in for the OpenStack "builder" image.
-# Only needs to satisfy what common-functions.sh actually uses on a node:
+# CSIT nodes, two targets in one file so the shared base is never duplicated:
+#
+#   --target node   stands in for the OpenStack "builder" image (runs karaf)
+#   --target tools  stands in for the "mininet-ovs-217" image (runs mininet/OVS)
+#
+# The node target only needs what common-functions.sh actually uses on a node:
 # sshd, sudo, wget, unzip, netstat, sshpass, jstack (jdk), bash.
-FROM ubuntu:22.04
+
+FROM ubuntu:22.04 AS node
 
 ARG JDK=21
 ENV DEBIAN_FRONTEND=noninteractive
@@ -29,3 +34,30 @@ RUN apt-get update \
 
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
+
+
+# Ubuntu 22.04 ships Open vSwitch 2.17.x, which is exactly the version
+# packer/provision/mininet-ovs-217.yaml builds from source, so apt is enough.
+# ponytail: mtcbench/cbench is built from source on the VM image but only 3 of
+# 158 jobs use it (openflowplugin-csit-1node-cbench-only-*). Left out until one
+# of those jobs is migrated.
+FROM node AS tools
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        exabgp \
+        iputils-ping \
+        mininet \
+        openvswitch-switch \
+        openvswitch-vtep \
+        python3-netaddr \
+        python3-openvswitch \
+        python3-requests \
+        tcpdump \
+        vlan \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tools-entrypoint.sh /usr/local/bin/tools-entrypoint.sh
+RUN chmod 755 /usr/local/bin/tools-entrypoint.sh
+
+CMD ["/usr/local/bin/tools-entrypoint.sh"]

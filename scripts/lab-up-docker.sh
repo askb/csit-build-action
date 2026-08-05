@@ -19,7 +19,7 @@ set -euo pipefail
 ODL_NODES="${ODL_NODES:-1}"
 TOOLS_NODES="${TOOLS_NODES:-0}"
 CSIT_NODE_IMAGE="${CSIT_NODE_IMAGE:-ghcr.io/lfreleng-actions/csit-node:22.04-jdk21}"
-CSIT_TOOLS_IMAGE="${CSIT_TOOLS_IMAGE:-$CSIT_NODE_IMAGE}"
+CSIT_TOOLS_IMAGE="${CSIT_TOOLS_IMAGE:-ghcr.io/lfreleng-actions/csit-tools:22.04-ovs217}"
 CSIT_LAB_ID="${CSIT_LAB_ID:-csit-local}"
 WORKSPACE="${WORKSPACE:-${GITHUB_WORKSPACE:-$PWD}}"
 NET="csit-net-${CSIT_LAB_ID}"
@@ -51,7 +51,7 @@ docker network create "$NET" >/dev/null 2>&1 || true
 # ponytail: pull the published node image, fall back to building the bundled
 # Dockerfile. Drop the fallback once the image is published to ghcr.
 ensure_image() {
-    local image="$1"
+    local image="$1" target="${2:-node}"
     if docker image inspect "$image" >/dev/null 2>&1; then
         return 0
     fi
@@ -59,19 +59,29 @@ ensure_image() {
         return 0
     fi
     local dockerfile="${CSIT_NODE_DOCKERFILE:-${GITHUB_ACTION_PATH:-$(dirname "$0")/..}/docker/Dockerfile.node}"
-    echo "---> ${image} unavailable, building from ${dockerfile}"
-    docker build -q -t "$image" -f "$dockerfile" "$(dirname "$dockerfile")" >/dev/null
+    echo "---> ${image} unavailable, building --target ${target} from ${dockerfile}"
+    docker build -q --target "$target" -t "$image" \
+        -f "$dockerfile" "$(dirname "$dockerfile")" >/dev/null
 }
 
-ensure_image "$CSIT_NODE_IMAGE"
-[ "$CSIT_TOOLS_IMAGE" = "$CSIT_NODE_IMAGE" ] || ensure_image "$CSIT_TOOLS_IMAGE"
+ensure_image "$CSIT_NODE_IMAGE" node
+if [ "$TOOLS_NODES" -gt 0 ] && [ "$CSIT_TOOLS_IMAGE" != "$CSIT_NODE_IMAGE" ]; then
+    ensure_image "$CSIT_TOOLS_IMAGE" tools
+fi
 
 start_node() {
-    local name="$1" image="$2"
-    docker run -d --name "$name" --hostname "$name" --network "$NET" \
-        --cap-add NET_ADMIN --cap-add SYS_PTRACE \
-        --shm-size 512m \
-        "$image" >/dev/null
+    local name="$1" image="$2" role="${3:-odl}"
+    local -a opts=(
+        -d --name "$name" --hostname "$name" --network "$NET"
+        --cap-add NET_ADMIN --cap-add SYS_PTRACE --shm-size 512m
+    )
+    # The tools node runs Open vSwitch on the kernel datapath and mininet,
+    # which need the host's openvswitch module and full privileges. Verified
+    # to work on GitHub-hosted runners (probe-tools-node.yaml).
+    if [ "$role" = "tools" ]; then
+        opts+=(--privileged -v /lib/modules:/lib/modules:ro)
+    fi
+    docker run "${opts[@]}" "$image" >/dev/null
     # The node user must match the runner's $USER: common-functions.sh calls
     # bare `ssh $IP` and robot receives -v ODL_SYSTEM_USER:$USER.
     docker exec "$name" bash -c "
@@ -110,7 +120,7 @@ for i in $(seq 1 "$ODL_NODES"); do
     odl_ips+=("$(start_node "csit-${CSIT_LAB_ID}-odl-${i}" "$CSIT_NODE_IMAGE")")
 done
 for i in $(seq 1 "$TOOLS_NODES"); do
-    tools_ips+=("$(start_node "csit-${CSIT_LAB_ID}-tools-${i}" "$CSIT_TOOLS_IMAGE")")
+    tools_ips+=("$(start_node "csit-${CSIT_LAB_ID}-tools-${i}" "$CSIT_TOOLS_IMAGE" tools)")
 done
 
 : > "$ADDRESSES"

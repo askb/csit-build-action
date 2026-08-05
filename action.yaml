@@ -32,9 +32,9 @@ inputs:
     required: false
     default: "ghcr.io/lfreleng-actions/csit-node:22.04-jdk21"
   tools-image:
-    description: "Container image used for tools nodes (docker backend); defaults to node-image"
+    description: "Container image used for tools nodes (docker backend); stands in for the mininet-ovs-217 VM image"
     required: false
-    default: ""
+    default: "ghcr.io/lfreleng-actions/csit-tools:22.04-ovs217"
 
   # Sources
   csit-scripts-dir:
@@ -170,7 +170,7 @@ runs:
         ODL_NODES: ${{ inputs.odl-nodes }}
         TOOLS_NODES: ${{ inputs.tools-nodes }}
         CSIT_NODE_IMAGE: ${{ inputs.node-image }}
-        CSIT_TOOLS_IMAGE: ${{ inputs.tools-image || inputs.node-image }}
+        CSIT_TOOLS_IMAGE: ${{ inputs.tools-image }}
         CSIT_LAB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         CSIT_BACKEND: ${{ inputs.backend }}
       run: |
