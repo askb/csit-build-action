@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# CSIT controller node. Stands in for the OpenStack "builder" image.
+# Only needs to satisfy what common-functions.sh actually uses on a node:
+# sshd, sudo, wget, unzip, netstat, sshpass, jstack (jdk), bash.
+FROM ubuntu:22.04
+
+ARG JDK=21
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        iproute2 \
+        net-tools \
+        openjdk-${JDK}-jdk \
+        openssh-server \
+        procps \
+        python3 \
+        python3-venv \
+        sshpass \
+        sudo \
+        unzip \
+        wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

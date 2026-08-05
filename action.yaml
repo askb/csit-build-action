@@ -1,0 +1,217 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+name: "CSIT Build Action"
+description: >
+  Run an OpenDaylight-style CSIT (Continuous System Integration Test) job on
+  GitHub Actions. Provisions a lab of SSH-reachable nodes, resolves the karaf
+  distribution under test, and executes the project's robot suites.
+author: "Anil Belur <askb23@gmail.com>"
+
+inputs:
+  mode:
+    description: "lab-up | run | lab-down | resolve"
+    required: false
+    default: "run"
+  backend:
+    description: "Node provider: 'docker' (runner-local containers) or 'openstack' (Heat + Tailscale)"
+    required: false
+    default: "docker"
+
+  # Lab shape
+  odl-nodes:
+    description: "Number of controller nodes (VM_0_COUNT in JJB)"
+    required: false
+    default: "1"
+  tools-nodes:
+    description: "Number of tools/mininet nodes (VM_1_COUNT in JJB)"
+    required: false
+    default: "0"
+  node-image:
+    description: "Container image used for controller nodes (docker backend)"
+    required: false
+    default: "ghcr.io/lfreleng-actions/csit-node:22.04-jdk21"
+  tools-image:
+    description: "Container image used for tools nodes (docker backend); defaults to node-image"
+    required: false
+    default: ""
+
+  # Sources
+  csit-scripts-dir:
+    description: >
+      Path to a checked-out releng/builder jjb/integration directory. These
+      scripts stay the single source of truth for CSIT behaviour.
+    required: false
+    default: "jjb/integration"
+  lf-env:
+    description: "Path to global-jjb jenkins-init-scripts/lf-env.sh"
+    required: false
+    default: ""
+  test-dir:
+    description: "Path to a checked-out integration/test repository"
+    required: false
+    default: "test"
+
+  # Distribution under test
+  bundle-url:
+    description: "Karaf distribution zip URL, or 'last' to resolve the newest snapshot"
+    required: false
+    default: "last"
+  karaf-version:
+    description: "karaf4 | netconf | bgpcep | controller | odl | karaf3"
+    required: false
+    default: "karaf4"
+  jdk-version:
+    description: "openjdk21 | openjdk17 | openjdk11 | openjdk8"
+    required: false
+    default: "openjdk21"
+  distribution-branch:
+    description: "Branch of integration/distribution the bundle is built from (DISTROBRANCH)"
+    required: false
+    default: "master"
+  distribution-stream:
+    description: "Stream name suites branch on (DISTROSTREAM), e.g. chromium"
+    required: true
+
+  # Controller configuration
+  install-features:
+    description: "Comma separated karaf features to install (CONTROLLERFEATURES)"
+    required: false
+    default: ""
+  controller-scope:
+    description: "'only' or 'all' (CONTROLLERSCOPE)"
+    required: false
+    default: "only"
+  controller-max-mem:
+    description: "Karaf max heap (CONTROLLERMAXMEM)"
+    required: false
+    default: "2048m"
+  debug-map:
+    description: "Space separated module:LEVEL debug map (CONTROLLERDEBUGMAP)"
+    required: false
+    default: ""
+  use-features-boot:
+    description: "Append features to featuresBoot instead of installing at runtime"
+    required: false
+    default: "True"
+  elasticsearch-attribute:
+    description: "JVM metric harvesting period, or 'disabled'"
+    required: false
+    default: "disabled"
+  karaf-based-controller:
+    description: "'True' when the project ships a karaf distribution (IS_KARAF_APPL)"
+    required: false
+    default: "True"
+
+  # Test selection
+  test-plan:
+    description: "Fallback robot test plan filename (TESTPLAN)"
+    required: true
+  stream-test-plan:
+    description: "Stream specific robot test plan filename (STREAMTESTPLAN)"
+    required: false
+    default: ""
+  script-plan:
+    description: "Script plan filename run before the distribution is unpacked"
+    required: false
+    default: ""
+  config-plan:
+    description: "Config plan filename run after the distribution starts"
+    required: false
+    default: ""
+  suites:
+    description: "Space separated suites, overriding the test plan"
+    required: false
+    default: ""
+  robot-options:
+    description: "Extra robot command line options (TESTOPTIONS)"
+    required: false
+    default: ""
+  repo-url:
+    description: "Extra feature repository artifact URL (REPO_URL)"
+    required: false
+    default: ""
+
+outputs:
+  bundle-url:
+    description: "Resolved karaf distribution URL under test"
+    value: ${{ steps.resolve.outputs.bundle-url }}
+  bundle-folder:
+    description: "Extracted distribution directory name"
+    value: ${{ steps.resolve.outputs.bundle-folder }}
+  odl-system-ip:
+    description: "IP of the first controller node"
+    value: ${{ steps.lab.outputs.odl-system-ip }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve distribution
+      id: resolve
+      if: inputs.mode == 'run' || inputs.mode == 'resolve'
+      shell: bash
+      env:
+        KARAF_VERSION: ${{ inputs.karaf-version }}
+        JDKVERSION: ${{ inputs.jdk-version }}
+        BUNDLE_URL: ${{ inputs.bundle-url }}
+        DISTROBRANCH: ${{ inputs.distribution-branch }}
+      run: |
+        "${GITHUB_ACTION_PATH}/scripts/resolve-distribution.sh"
+        {
+          echo "bundle-url=${ACTUAL_BUNDLE_URL:-}"
+          echo "bundle-folder=${BUNDLEFOLDER:-}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Bring up CSIT lab
+      id: lab
+      if: inputs.mode == 'run' || inputs.mode == 'lab-up'
+      shell: bash
+      env:
+        ODL_NODES: ${{ inputs.odl-nodes }}
+        TOOLS_NODES: ${{ inputs.tools-nodes }}
+        CSIT_NODE_IMAGE: ${{ inputs.node-image }}
+        CSIT_TOOLS_IMAGE: ${{ inputs.tools-image || inputs.node-image }}
+        CSIT_LAB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        CSIT_BACKEND: ${{ inputs.backend }}
+      run: |
+        "${GITHUB_ACTION_PATH}/scripts/lab-up-${CSIT_BACKEND}.sh"
+        echo "odl-system-ip=${ODL_SYSTEM_IP:-}" >> "$GITHUB_OUTPUT"
+
+    - name: Run CSIT
+      if: inputs.mode == 'run'
+      shell: bash
+      env:
+        CSIT_SCRIPTS_DIR: ${{ inputs.csit-scripts-dir }}
+        CSIT_LF_ENV: ${{ inputs.lf-env }}
+        GERRIT_PROJECT: "integration/test"
+        GERRIT_BRANCH: ${{ inputs.distribution-branch }}
+        GERRIT_REFSPEC: "refs/heads/${{ inputs.distribution-branch }}"
+        BUNDLE_URL: ${{ inputs.bundle-url }}
+        REPO_URL: ${{ inputs.repo-url }}
+        TESTOPTIONS: ${{ inputs.robot-options }}
+        CONTROLLERSCOPE: ${{ inputs.controller-scope }}
+        CONTROLLERFEATURES: ${{ inputs.install-features }}
+        CONTROLLERDEBUGMAP: ${{ inputs.debug-map }}
+        CONTROLLERMAXMEM: ${{ inputs.controller-max-mem }}
+        CONTROLLERMEM: ${{ inputs.controller-max-mem }}
+        ELASTICSEARCHATTRIBUTE: ${{ inputs.elasticsearch-attribute }}
+        USEFEATURESBOOT: ${{ inputs.use-features-boot }}
+        IS_KARAF_APPL: ${{ inputs.karaf-based-controller }}
+        KARAF_VERSION: ${{ inputs.karaf-version }}
+        JDKVERSION: ${{ inputs.jdk-version }}
+        DISTROBRANCH: ${{ inputs.distribution-branch }}
+        DISTROSTREAM: ${{ inputs.distribution-stream }}
+        SCRIPTPLAN: ${{ inputs.script-plan }}
+        CONFIGPLAN: ${{ inputs.config-plan }}
+        STREAMTESTPLAN: ${{ inputs.stream-test-plan }}
+        TESTPLAN: ${{ inputs.test-plan }}
+        SUITES: ${{ inputs.suites }}
+      run: "${GITHUB_ACTION_PATH}/scripts/run-csit.sh"
+
+    - name: Tear down CSIT lab
+      if: always() && (inputs.mode == 'run' || inputs.mode == 'lab-down')
+      shell: bash
+      env:
+        CSIT_LAB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        CSIT_BACKEND: ${{ inputs.backend }}
+      run: "${GITHUB_ACTION_PATH}/scripts/lab-down-${CSIT_BACKEND}.sh"
