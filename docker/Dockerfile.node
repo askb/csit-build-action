@@ -36,12 +36,44 @@ EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
 
 
+# cbench has no distro package, so it is built exactly the way
+# packer/provision/mininet-ovs-217.yaml builds it: same fork, same Makefile.am
+# LDADD fix, same install path (010_Cbench.robot asserts /usr/local/bin/cbench).
+# Upstream is dormant (HEAD is from 2017), so the commit is pinned.
+# The result links only libc/libm, so the binary is copied into the tools image
+# and the ~400 MB of build tooling is thrown away with this stage.
+FROM ubuntu:22.04 AS cbench
+
+ARG MTCBENCH_REF=dd2409235a35ede75ad91c8512cd7a9af5fa9f1a
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        ca-certificates \
+        git \
+        libconfig-dev \
+        libffi-dev \
+        libpcap-dev \
+        libsnmp-dev \
+        libssl-dev \
+        libtool \
+        make \
+        pkg-config \
+    && git clone https://github.com/intracom-telecom-sdn/mtcbench.git /tmp/mtcbench \
+    && git -C /tmp/mtcbench checkout --quiet "${MTCBENCH_REF}" \
+    && sed -i 's|^LDADD=-ldl -lpcap -lnetsnmp -loflops_test$|LDADD=-ldl -lpcap -lnetsnmp liboflops_test.la|' \
+        /tmp/mtcbench/oflops/Makefile.am \
+    && (cd /tmp/mtcbench && ./build_mtcbench.sh || true) \
+    && make -C /tmp/mtcbench/oflops/cbench \
+    && install -m 755 /tmp/mtcbench/oflops/cbench/cbench /usr/local/bin/cbench
+
+
 # Ubuntu 22.04 ships Open vSwitch 2.17.9 via apt;
 # packer/provision/mininet-ovs-217.yaml builds 2.17.11 from source. Same 2.17
 # series, two patch releases behind, so apt is close enough and far cheaper.
-# ponytail: mtcbench/cbench is built from source on the VM image but only 3 of
-# 158 jobs use it (openflowplugin-csit-1node-cbench-only-*). Left out until one
-# of those jobs is migrated.
 FROM node AS tools
 
 RUN apt-get update \
@@ -58,6 +90,7 @@ RUN apt-get update \
         vlan \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=cbench /usr/local/bin/cbench /usr/local/bin/cbench
 COPY tools-entrypoint.sh /usr/local/bin/tools-entrypoint.sh
 RUN chmod 755 /usr/local/bin/tools-entrypoint.sh
 
