@@ -46,7 +46,20 @@ Host *
 EOF
 chmod 600 "${HOME}/.ssh/config"
 
-docker network create "$NET" >/dev/null 2>&1 || true
+# IPv6 is disabled per-interface inside a container on an IPv4-only docker
+# network, so `ip -6 addr add` fails with "IPv6 is disabled on this device".
+# bgp_ipv6_basic.robot assigns its own 2607:f0d0:1002:11::2/64 to the tools
+# node and then peers exabgp over it, so without this the whole suite fails
+# with "Unable to connect ExaBgp to ODL". The subnet below is only there to
+# turn the feature on: it is a ULA that no suite refers to, and the suites
+# keep addressing each other over IPv4.
+if ! docker network create --ipv6 --subnet fd00:c517::/64 "$NET" >/dev/null 2>&1; then
+    docker network create "$NET" >/dev/null 2>&1 || true
+    if ! docker network inspect "$NET" --format '{{.EnableIPv6}}' 2>/dev/null | grep -q true; then
+        echo "::warning::docker network $NET has no IPv6;" \
+             "IPv6 suites such as bgp_ipv6_basic will fail to assign addresses"
+    fi
+fi
 
 # ponytail: pull the published node image, fall back to building the bundled
 # Dockerfile. Drop the fallback once the image is published to ghcr.
