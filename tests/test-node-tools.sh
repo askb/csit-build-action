@@ -11,8 +11,14 @@
 # case -- so the list is asserted instead of rediscovered.
 #
 # The list comes from the suites themselves, i.e. the first word of every
-# Execute_Command* / Run Command On Remote System call in integration-test,
-# minus shell builtins.
+# Execute_Command* / Run Command On Remote System / Run_Command_On_Controller
+# call in integration-test, minus shell builtins. Note the keyword has nine
+# spellings (_Should_Pass, _Passes, _At_Cwd, _At_Path, "And Log", ...); a
+# regex that misses one silently under-reports.
+#
+# apt-get is deliberately NOT here: the only suite call is
+# SSHKeywords.Install_Netstat, a fallback that never fires because netstat is
+# asserted below.
 #
 # Usage: tests/test-node-tools.sh [image]   (default: locally built tools tag)
 ##############################################################################
@@ -24,9 +30,9 @@ image="${1:-csit-tools:test}"
 # ponytail: cbench is only reachable on the tools image, but the tools image is
 # built FROM node, so checking tools alone covers both stages.
 required=(
-    awk bash cat curl git grep ip java ls mkdir mv netstat ps python3 rm sed
-    ssh-keygen sudo tar unzip virtualenv wget which xz
-    cbench mn ovs-vsctl
+    awk bash cat curl git grep ip java ls mkdir mv netstat pkill ps python3 rm
+    sed service ssh-keygen sudo tar unzip virtualenv wget which xz
+    cbench mn ovs-ofctl ovs-vsctl
 )
 
 if ! docker image inspect "${image}" >/dev/null 2>&1; then
