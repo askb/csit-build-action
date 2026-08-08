@@ -1,0 +1,79 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Publishes the two CSIT node images to GHCR.
+#
+# These replace OpenStack VM images that packer builds today:
+#   csit-node   <- packer/templates/builder.pkr.hcl        (runs karaf)
+#   csit-tools  <- packer/templates/mininet-ovs-217.pkr.hcl (runs mininet/OVS)
+#
+# Without this, every CSIT run rebuilds them from the Dockerfile (~52s a run,
+# times 148 jobs a night).
+#
+# Owner comes from github.repository_owner, so this publishes to
+# ghcr.io/<fork>/... while testing and ghcr.io/opendaylight/... once it lands
+# on the ODL org, with no edit.
+
+name: Publish CSIT images
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - ".github/workflows/publish-images.yaml"
+  schedule:
+    # Monthly, matching the cadence of the packer image builds in
+    # releng/builder (gerrit-packer-merge-*.yaml run on the 1st).
+    - cron: "25 1 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: node
+            image: csit-node
+            tag: 22.04-jdk21
+          - target: tools
+            image: csit-tools
+            tag: 22.04-ovs217
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: docker
+          file: docker/Dockerfile.node
+          target: ${{ matrix.target }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ matrix.tag }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "Pushed \`ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ matrix.tag }}\`" \
+            >> "$GITHUB_STEP_SUMMARY"

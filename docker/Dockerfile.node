@@ -36,8 +36,9 @@ EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
 
 
-# Ubuntu 22.04 ships Open vSwitch 2.17.x, which is exactly the version
-# packer/provision/mininet-ovs-217.yaml builds from source, so apt is enough.
+# Ubuntu 22.04 ships Open vSwitch 2.17.9 via apt;
+# packer/provision/mininet-ovs-217.yaml builds 2.17.11 from source. Same 2.17
+# series, two patch releases behind, so apt is close enough and far cheaper.
 # ponytail: mtcbench/cbench is built from source on the VM image but only 3 of
 # 158 jobs use it (openflowplugin-csit-1node-cbench-only-*). Left out until one
 # of those jobs is migrated.

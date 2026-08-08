@@ -10,7 +10,7 @@ author: "Anil Belur <askb23@gmail.com>"
 
 inputs:
   mode:
-    description: "lab-up | run | lab-down | resolve"
+    description: "lab-up | run | lab-down | resolve | report"
     required: false
     default: "run"
   backend:
@@ -30,11 +30,13 @@ inputs:
   node-image:
     description: "Container image used for controller nodes (docker backend)"
     required: false
-    default: "ghcr.io/lfreleng-actions/csit-node:22.04-jdk21"
+    # ponytail: askb while proving; becomes ghcr.io/opendaylight/... on adoption
+    default: "ghcr.io/askb/csit-node:22.04-jdk21"
   tools-image:
     description: "Container image used for tools nodes (docker backend); stands in for the mininet-ovs-217 VM image"
     required: false
-    default: "ghcr.io/lfreleng-actions/csit-tools:22.04-ovs217"
+    # ponytail: askb while proving; becomes ghcr.io/opendaylight/... on adoption
+    default: "ghcr.io/askb/csit-tools:22.04-ovs217"
 
   # Sources
   csit-scripts-dir:
@@ -135,6 +137,36 @@ inputs:
     description: "Warn if the robot pass rate is below this percentage"
     required: false
     default: "0.0"
+  job-name:
+    description: >
+      The JJB job name this run reproduces. Used as the heading of the
+      per-job report, so the run summary is readable without cross-referencing
+      the matrix.
+    required: false
+    default: ""
+  results-dir:
+    description: >
+      mode=report only. Directory holding one subdirectory of downloaded
+      results per job, named after the job.
+    required: false
+    default: "results"
+  expected-jobs:
+    description: >
+      mode=report only. JSON array of the job objects that were dispatched.
+      Used so a job that produced no results is reported rather than dropped.
+    required: false
+    default: ""
+  html-dir:
+    description: >
+      mode=report only. When set, publish a self-contained report site here
+      (index.html, report.json, csit-summary.md, plus rebot's report.html and
+      log.html) for GitHub Pages. Empty means step summary only.
+    required: false
+    default: ""
+  title:
+    description: "mode=report only. Heading for the published report."
+    required: false
+    default: ""
   repo-url:
     description: "Extra feature repository artifact URL (REPO_URL)"
     required: false
@@ -216,6 +248,7 @@ runs:
         STREAMTESTPLAN: ${{ inputs.stream-test-plan }}
         TESTPLAN: ${{ inputs.test-plan }}
         SUITES: ${{ inputs.suites }}
+        CSIT_JOB: ${{ inputs.job-name }}
       run: "${GITHUB_ACTION_PATH}/scripts/run-csit.sh"
 
     - name: Tear down CSIT lab
@@ -225,3 +258,36 @@ runs:
         CSIT_LAB_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         CSIT_BACKEND: ${{ inputs.backend }}
       run: "${GITHUB_ACTION_PATH}/scripts/lab-down-${CSIT_BACKEND}.sh"
+
+    # Jenkins gave each job a Robot plugin verdict and mailed the project.
+    # Whether an ODL release ships is a community decision, so the fan-out
+    # needs one readable page covering every job it dispatched.
+    - name: Report CSIT results
+      if: inputs.mode == 'report'
+      shell: bash
+      env:
+        RESULTS_DIR: ${{ inputs.results-dir }}
+        EXPECTED_JOBS: ${{ inputs.expected-jobs }}
+        HTML_DIR: ${{ inputs.html-dir }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        set -euo pipefail
+        expected=""
+        if [ -n "${EXPECTED_JOBS}" ]; then
+            expected="${RUNNER_TEMP}/expected-jobs.txt"
+            # A JSON array of job objects (what the matrix was fed), or a
+            # plain newline-separated list of names. Accepting both means the
+            # orchestrator can hand over a merged list without reshaping it.
+            if jq -e 'type == "array"' >/dev/null 2>&1 <<<"${EXPECTED_JOBS}"; then
+                jq -r '.[] | if type == "object" then .job else . end' \
+                    <<<"${EXPECTED_JOBS}" >"${expected}"
+            else
+                printf '%s\n' "${EXPECTED_JOBS}" >"${expected}"
+            fi
+        fi
+        args=()
+        if [ -n "${HTML_DIR}" ]; then
+            args+=(--html "${HTML_DIR}" --title "${TITLE}")
+        fi
+        python3 "${GITHUB_ACTION_PATH}/scripts/robot-gate.py" \
+            --summary "${RESULTS_DIR}" "${expected}" "${args[@]}"
