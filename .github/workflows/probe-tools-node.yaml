@@ -24,7 +24,8 @@ jobs:
           set -x
           uname -a
           modinfo openvswitch 2>&1 | head -3 || echo "NO openvswitch modinfo"
-          sudo modprobe openvswitch && echo "MODPROBE_OK" || echo "MODPROBE_FAIL"
+          sudo modprobe openvswitch \
+            && echo "MODPROBE_OK" || echo "MODPROBE_FAIL"
           lsmod | grep -E 'openvswitch|gre' || true
 
       - name: Can a privileged container run OVS with the kernel datapath
