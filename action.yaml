@@ -6,7 +6,7 @@ description: >
   Run an OpenDaylight-style CSIT (Continuous System Integration Test) job on
   GitHub Actions. Provisions a lab of SSH-reachable nodes, resolves the karaf
   distribution under test, and executes the project's robot suites.
-author: "Anil Belur <askb23@gmail.com>"
+author: "Anil Belur <abelur@linuxfoundation.org>"
 
 inputs:
   mode:
@@ -14,7 +14,9 @@ inputs:
     required: false
     default: "run"
   backend:
-    description: "Node provider: 'docker' (runner-local containers) or 'openstack' (Heat + Tailscale)"
+    description: >-
+      Node provider: 'docker' (runner-local containers) or 'openstack'
+      (Heat + Tailscale)
     required: false
     default: "docker"
 
@@ -33,7 +35,9 @@ inputs:
     # ponytail: askb while proving; becomes ghcr.io/opendaylight/... on adoption
     default: "ghcr.io/askb/csit-node:22.04-jdk21"
   tools-image:
-    description: "Container image used for tools nodes (docker backend); stands in for the mininet-ovs-217 VM image"
+    description: >-
+      Container image used for tools nodes (docker backend); stands in for
+      the mininet-ovs-217 VM image
     required: false
     # ponytail: askb while proving; becomes ghcr.io/opendaylight/... on adoption
     default: "ghcr.io/askb/csit-tools:22.04-ovs217"
@@ -56,7 +60,8 @@ inputs:
 
   # Distribution under test
   bundle-url:
-    description: "Karaf distribution zip URL, or 'last' to resolve the newest snapshot"
+    description: >-
+      Karaf distribution zip URL, or 'last' to resolve the newest snapshot
     required: false
     default: "last"
   karaf-version:
@@ -68,7 +73,9 @@ inputs:
     required: false
     default: "openjdk21"
   distribution-branch:
-    description: "Branch of integration/distribution the bundle is built from (DISTROBRANCH)"
+    description: >-
+      Branch of integration/distribution the bundle is built from
+      (DISTROBRANCH)
     required: false
     default: "master"
   distribution-stream:
@@ -77,7 +84,8 @@ inputs:
 
   # Controller configuration
   install-features:
-    description: "Comma separated karaf features to install (CONTROLLERFEATURES)"
+    description: >-
+      Comma separated karaf features to install (CONTROLLERFEATURES)
     required: false
     default: ""
   controller-scope:
@@ -93,7 +101,8 @@ inputs:
     required: false
     default: ""
   use-features-boot:
-    description: "Append features to featuresBoot instead of installing at runtime"
+    description: >-
+      Append features to featuresBoot instead of installing at runtime
     required: false
     default: "True"
   elasticsearch-attribute:
@@ -101,7 +110,8 @@ inputs:
     required: false
     default: "disabled"
   karaf-based-controller:
-    description: "'True' when the project ships a karaf distribution (IS_KARAF_APPL)"
+    description: >-
+      'True' when the project ships a karaf distribution (IS_KARAF_APPL)
     required: false
     default: "True"
 
@@ -146,25 +156,27 @@ inputs:
     default: ""
   results-dir:
     description: >
-      mode=report only. Directory holding one subdirectory of downloaded
-      results per job, named after the job.
+      Used by `mode: report`. Directory holding one subdirectory of
+      downloaded results per job, named after the job.
     required: false
     default: "results"
   expected-jobs:
     description: >
-      mode=report only. JSON array of the job objects that were dispatched.
-      Used so a job that produced no results is reported rather than dropped.
+      Used by `mode: report`. JSON array of the dispatched job objects, so
+      the report covers a job that produced no results instead of dropping
+      it.
     required: false
     default: ""
   html-dir:
     description: >
-      mode=report only. When set, publish a self-contained report site here
-      (index.html, report.json, csit-summary.md, plus rebot's report.html and
-      log.html) for GitHub Pages. Empty means step summary only.
+      Used by `mode: report`. When set, publish a self-contained report site
+      here (index.html, report.json, csit-summary.md, plus rebot's
+      report.html and log.html) for GitHub Pages. Empty means the step
+      summary alone.
     required: false
     default: ""
   title:
-    description: "mode=report only. Heading for the published report."
+    description: "Used by `mode: report`. Heading for the published report."
     required: false
     default: ""
   repo-url:
@@ -278,7 +290,8 @@ runs:
             # A JSON array of job objects (what the matrix was fed), or a
             # plain newline-separated list of names. Accepting both means the
             # orchestrator can hand over a merged list without reshaping it.
-            if jq -e 'type == "array"' >/dev/null 2>&1 <<<"${EXPECTED_JOBS}"; then
+            if jq -e 'type == "array"' >/dev/null 2>&1 \
+                <<<"${EXPECTED_JOBS}"; then
                 jq -r '.[] | if type == "object" then .job else . end' \
                     <<<"${EXPECTED_JOBS}" >"${expected}"
             else

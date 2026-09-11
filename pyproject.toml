@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# This repository ships a composite action, not a Python package. The only
+# Python is scripts/robot-gate.py; this file exists to scope the type
+# checker to it. Without `include` basedpyright walks the whole tree, and
+# without `typeCheckingMode` it defaults to the strictest preset and buries
+# real defects under hundreds of inference warnings.
+[tool.basedpyright]
+pythonVersion = "3.10"
+pythonPlatform = "All"
+typeCheckingMode = "standard"
+include = ["scripts", "tests"]

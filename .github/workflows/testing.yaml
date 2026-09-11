@@ -1,0 +1,121 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Action test/validation workflow
+name: "Test GitHub Action 🧪"
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  ### Unit tests for the scripts the action shells out to ###
+  unit:
+    name: "Unit tests"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # Covers both robot-gate modes, including the cases that must FAIL:
+      # a job under its pass threshold, an unparsable output.xml and a job
+      # that produced no results at all. Deliberate-failure coverage lives
+      # here rather than as a continue-on-error step, because the gate is a
+      # script and asserting its exit code directly is cheaper and stricter.
+      - name: "Robot result gate"
+        shell: bash
+        run: |
+          # Robot result gate
+          tests/test-robot-gate.sh
+
+  ### Test the GitHub Action in this Repository ###
+  action:
+    name: "Test local GitHub Action"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # A green job, a job under threshold and a job that never wrote
+      # results -- the three shapes the release report has to render.
+      - name: "Build a results fixture"
+        shell: bash
+        run: |
+          # Build a results fixture
+          set -euo pipefail
+          mkdir -p results/job-green results/job-red results/job-empty
+          cat > results/job-green/output.xml <<'XML'
+          <robot name="Green"><statistics><total>
+          <stat pass="9" fail="0">All Tests</stat>
+          </total></statistics></robot>
+          XML
+          cat > results/job-red/output.xml <<'XML'
+          <robot name="Red"><statistics><total>
+          <stat pass="55" fail="5">All Tests</stat>
+          </total></statistics></robot>
+          XML
+
+      - name: "Running local action: ${{ github.repository }}"
+        uses: ./
+        with:
+          mode: "report"
+          results-dir: "results"
+          # job-gone has no directory: it must still appear as an error row.
+          expected-jobs: '["job-green","job-red","job-empty","job-gone"]'
+          html-dir: "site"
+          title: "CSIT action self-test"
+          # Required inputs the report path does not use.
+          distribution-stream: "vanadium"
+          test-plan: "unused.txt"
+
+      - name: "Validated local action: ${{ github.repository }}"
+        shell: bash
+        run: |
+          # Local action validation
+          set -euo pipefail
+          for f in site/index.html site/report.json site/csit-summary.md; do
+              test -s "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          # Every dispatched job must be in the report, including the one
+          # that produced nothing -- silently dropping it would turn a
+          # crashed job into a green release.
+          for job in job-green job-red job-empty job-gone; do
+              grep -q "$job" site/report.json \
+                  || { echo "::error::$job missing from report"; exit 1; }
+          done
+          echo "Report rendered all 4 jobs ✅" >> "$GITHUB_STEP_SUMMARY"
