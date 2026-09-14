@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# CSIT nodes, two targets in one file so the shared base is never duplicated:
+#
+#   --target node   stands in for the OpenStack "builder" image (runs karaf)
+#   --target tools  stands in for the "mininet-ovs-217" image (runs mininet/OVS)
+#
+# The node target only needs what common-functions.sh actually uses on a node:
+# sshd, sudo, wget, unzip, netstat, sshpass, jstack (jdk), bash -- plus the
+# binaries the robot suites shell out to over SSH. That set was taken from the
+# suites themselves (every Execute_Command / Run Command On Remote System call
+# in integration-test) and is checked back against the built image, so a
+# missing tool shows up here rather than as a 0-score suite.
+# virtualenv is one of them: python3-venv is not a substitute, because
+# SSHKeywords.Virtual_Env_Create invokes the `virtualenv` binary by name.
+
+FROM ubuntu:22.04 AS node
+
+ARG JDK=21
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        iproute2 \
+        net-tools \
+        openjdk-${JDK}-jdk \
+        openssh-server \
+        procps \
+        python3 \
+        python3-venv \
+        sshpass \
+        sudo \
+        unzip \
+        virtualenv \
+        wget \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]
+
+
+# cbench has no distro package, so it is built exactly the way
+# packer/provision/mininet-ovs-217.yaml builds it: same fork, same Makefile.am
+# LDADD fix, same install path (010_Cbench.robot asserts /usr/local/bin/cbench).
+# Upstream is dormant (HEAD is from 2017), so the commit is pinned.
+# The result links only libc/libm, so the binary is copied into the tools image
+# and the ~400 MB of build tooling is thrown away with this stage.
+FROM ubuntu:22.04 AS cbench
+
+ARG MTCBENCH_REF=dd2409235a35ede75ad91c8512cd7a9af5fa9f1a
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        ca-certificates \
+        git \
+        libconfig-dev \
+        libffi-dev \
+        libpcap-dev \
+        libsnmp-dev \
+        libssl-dev \
+        libtool \
+        make \
+        pkg-config \
+    && git clone https://github.com/intracom-telecom-sdn/mtcbench.git /tmp/mtcbench \
+    && git -C /tmp/mtcbench checkout --quiet "${MTCBENCH_REF}" \
+    && sed -i 's|^LDADD=-ldl -lpcap -lnetsnmp -loflops_test$|LDADD=-ldl -lpcap -lnetsnmp liboflops_test.la|' \
+        /tmp/mtcbench/oflops/Makefile.am \
+    && (cd /tmp/mtcbench && ./build_mtcbench.sh || true) \
+    && make -C /tmp/mtcbench/oflops/cbench \
+    && install -m 755 /tmp/mtcbench/oflops/cbench/cbench /usr/local/bin/cbench
+
+
+# Ubuntu 22.04 ships Open vSwitch 2.17.9 via apt;
+# packer/provision/mininet-ovs-217.yaml builds 2.17.11 from source. Same 2.17
+# series, two patch releases behind, so apt is close enough and far cheaper.
+FROM node AS tools
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        exabgp \
+        iputils-ping \
+        mininet \
+        openvswitch-switch \
+        openvswitch-vtep \
+        python3-netaddr \
+        python3-openvswitch \
+        python3-requests \
+        tcpdump \
+        vlan \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=cbench /usr/local/bin/cbench /usr/local/bin/cbench
+COPY tools-entrypoint.sh /usr/local/bin/tools-entrypoint.sh
+RUN chmod 755 /usr/local/bin/tools-entrypoint.sh
+
+CMD ["/usr/local/bin/tools-entrypoint.sh"]
