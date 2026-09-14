@@ -203,8 +203,7 @@ def gate(argv):
     job = os.environ.get("CSIT_JOB") or res["name"]
     skipped = f", {res['skipped']} skipped" if res["skipped"] else ""
     lines = [
-        f"### {mark} {job} \u2014 {passed}/{total} passed "
-        f"({pct:.2f}%){skipped}",
+        f"### {mark} {job} \u2014 {passed}/{total} passed ({pct:.2f}%){skipped}",
         "",
     ]
 
