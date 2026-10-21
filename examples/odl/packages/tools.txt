@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# OpenDaylight CSIT tools node: stands in for the "mininet-ovs-217" image.
+# Open vSwitch comes from the base image's distro archive (2.17 on jammy);
+# the node entrypoint starts its daemons. cbench has no package, see
+# tools.sh.
+
+exabgp
+iputils-ping
+mininet
+openvswitch-switch
+openvswitch-vtep
+python3-netaddr
+python3-openvswitch
+python3-requests
+tcpdump
+vlan

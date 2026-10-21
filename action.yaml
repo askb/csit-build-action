@@ -1,53 +1,393 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
-
-# actions-template
-name: "🛠️ Actions Template"
-description: "Description of action"
-# Any relevant notes/observations can go here
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+name: "CSIT Build Action"
+description: >
+  Run a CSIT (Continuous System Integration Test) job on GitHub Actions.
+  Provisions a lab of SSH-reachable nodes from caller-supplied images,
+  resolves the artifact under test, runs the project's own test command
+  against the lab and gates on its Robot Framework results.
+author: "Anil Belur <abelur@linuxfoundation.org>"
 
 inputs:
-  input:
-    description: "Description of input"
-    required: true
+  mode:
+    description: "lab-up | run | lab-down | resolve | report"
+    required: false
+    default: "run"
+  backend:
+    description: >-
+      Node provider. Today the action ships 'docker' (runner-local
+      containers); 'openstack' (Heat + Tailscale) is on the roadmap
+    required: false
+    default: "docker"
+
+  # Lab shape
+  project-nodes:
+    description: >-
+      Number of nodes running the project under test (an integer, 1 or
+      more). lab-up publishes them as PROJECT_SYSTEM_n_IP
+    required: false
+    default: "1"
+  tools-nodes:
+    description: >-
+      Number of tools nodes (traffic generators, simulators and the like),
+      published as TOOLS_SYSTEM_n_IP
+    required: false
+    default: "0"
+  node-image:
+    description: >-
+      Container image for project nodes (docker backend). Required for
+      lab-up and run; pinned as image@sha256:... or a local image ID.
+      When the image sets JAVA_HOME to a JDK, lab-up passes it on as
+      CSIT_NODE_JAVA_HOME
+    required: false
+    default: ""
+  tools-image:
+    description: >-
+      Container image for tools nodes (docker backend). Required when
+      tools-nodes is above 0; pinned like node-image
+    required: false
+    default: ""
+  tools-privileged:
+    description: >-
+      Run tools nodes with --privileged and the host's /lib/modules, which
+      Open vSwitch on the kernel datapath and mininet need. A privileged
+      container is root on the runner, so reserve it for ephemeral runners
+    required: false
+    default: "false"
+  env-prefix:
+    description: >-
+      Extra name for the project nodes' variables, for harnesses that
+      already read their own: with ODL, lab-up also publishes NUM_ODL_SYSTEM,
+      ODL_SYSTEM_IP and ODL_SYSTEM_n_IP. Must match `[A-Z][A-Z0-9_]*`, not
+      be TOOLS and not start with GITHUB, RUNNER or LD
+    required: false
+    default: "PROJECT"
+  node-prompt:
+    description: >-
+      Shell prompt (PS1) for the node user, for harnesses that wait for a
+      particular prompt over SSH. Empty leaves the image's default
+    required: false
+    default: ""
+
+  # Artifact under test
+  artifact-url:
+    description: >-
+      URL of the artifact to test, laid out Maven-style as
+      `.../<artifactId>/<version>/<file>`, with no query or fragment.
+      Alternative to the Maven inputs
+    required: false
+    default: ""
+  maven-repo-url:
+    description: "Maven repository root to resolve the artifact from"
+    required: false
+    default: ""
+  group-id:
+    description: "Maven groupId of the artifact, for example org.example"
+    required: false
+    default: ""
+  artifact-id:
+    description: "Maven artifactId of the artifact"
+    required: false
+    default: ""
+  artifact-version:
+    description: >-
+      Artifact version. A -SNAPSHOT version resolves to the newest
+      timestamped build. Leave empty to read it from version-pom-url
+    required: false
+    default: ""
+  version-pom-url:
+    description: >-
+      URL of a pom.xml whose /project/version is the version to test, for
+      tracking a branch's current snapshot
+    required: false
+    default: ""
+  artifact-extension:
+    description: "File extension (Maven packaging) of the artifact"
+    required: false
+    default: "zip"
+
+  # Test
+  test-command:
+    description: >-
+      Bash command line that deploys and tests the project on the lab. Runs
+      in the workspace with the lab's variables (see README), ARTIFACT_*,
+      extra-env and CSIT_ACTION_PATH in its environment. Required for run
+    required: false
+    default: ""
+  extra-env:
+    description: >-
+      Extra environment for test-command, one NAME=VALUE per line. The
+      action skips blank lines and lines starting with #, and refuses PATH,
+      IFS, HOME, ENV, BASH_ENV, SHELLOPTS, BASHOPTS, PS4, `LD_*`,
+      `GITHUB_*`, `RUNNER_*`, WORKSPACE and CSIT_ACTION_PATH. The values reach
+      test-command alone, never the action's own scripts
+    required: false
+    default: ""
+  robot-output:
+    description: >-
+      Robot Framework output.xml the test command writes, relative to the
+      workspace; the action judges it against the pass thresholds. Empty
+      makes the test command's exit status the verdict
+    required: false
+    default: "output.xml"
+  robot-pass-threshold:
+    description: "Fail the job if the robot pass rate is below this percentage"
+    required: false
+    default: "100.0"
+  robot-unstable-threshold:
+    description: "Warn if the robot pass rate is below this percentage"
+    required: false
+    default: "0.0"
+  job-name:
+    description: >
+      Name of the job this run is, used as the heading of its report so the
+      run summary is readable without cross-referencing the matrix.
+    required: false
+    default: ""
+  results-dir:
+    description: >
+      Used by `mode: report`. Directory holding one subdirectory of
+      downloaded results per job, named after the job.
+    required: false
+    default: "results"
+  expected-jobs:
+    description: >
+      Used by `mode: report`. JSON array of the dispatched job objects, so
+      the report covers a job that produced no results instead of dropping
+      it.
+    required: false
+    default: ""
+  html-dir:
+    description: >
+      Used by `mode: report`. When set, publish a self-contained report site
+      here (index.html, report.json, csit-summary.md, plus each job's own
+      report.html and log.html under jobs/) for GitHub Pages. Empty
+      means the step summary alone.
+    required: false
+    default: ""
+  title:
+    description: "Used by `mode: report`. Heading for the published report."
+    required: false
+    default: ""
 
 outputs:
-  output:
-    description: "Description of output"
-    value: ${{ steps.code.outputs.output }}
+  artifact-url:
+    description: "Resolved URL of the artifact under test"
+    value: ${{ steps.resolve.outputs.artifact-url }}
+  artifact-version:
+    description: "Resolved version of the artifact under test"
+    value: ${{ steps.resolve.outputs.artifact-version }}
+  artifact-folder:
+    description: >-
+      `<artifactId>-<version>`, the directory such archives unpack to
+    value: ${{ steps.resolve.outputs.artifact-folder }}
+  project-system-ip:
+    description: "IP of the first project node"
+    value: ${{ steps.lab.outputs.project-system-ip }}
+  lab-env-file:
+    description: "Path of the lab.env file describing the lab"
+    value: ${{ steps.lab.outputs.lab-env-file }}
 
 runs:
   using: "composite"
   steps:
-    - name: "Friendly Name"
-      id: code
+    # First, before anything can fail: a run that dies in validation,
+    # resolution or provisioning must not leave a previous run's passing
+    # results for an artifact upload and report mode to pick up.
+    - name: Clear previous CSIT results
+      if: inputs.mode == 'run' && inputs.robot-output != ''
       shell: bash
       env:
-        INPUT_VALUE: ${{ inputs.input }}
+        ROBOT_OUTPUT: ${{ inputs.robot-output }}
       run: |
-        # Friendly Name
-        input="$INPUT_VALUE"
-        if [ -z "$input" ]; then
-          echo "Error: mandatory input was not set/configured ❌"
-          exit 1
+        set -euo pipefail
+        # Refuses a path that leaves the workspace, by name or through a
+        # symlinked directory, before deleting anything.
+        cd "${WORKSPACE:-$GITHUB_WORKSPACE}"
+        "${GITHUB_ACTION_PATH}/scripts/clear-results.sh" "$ROBOT_OUTPUT"
+
+    # Every later step is gated on mode, so an unknown mode would skip all
+    # of them and report success without running anything.
+    - name: Validate inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        CSIT_BACKEND: ${{ inputs.backend }}
+        PROJECT_NODES: ${{ inputs.project-nodes }}
+        TOOLS_NODES: ${{ inputs.tools-nodes }}
+        NODE_IMAGE: ${{ inputs.node-image }}
+        TOOLS_IMAGE: ${{ inputs.tools-image }}
+        TOOLS_PRIVILEGED: ${{ inputs.tools-privileged }}
+        ENV_PREFIX: ${{ inputs.env-prefix }}
+        TEST_COMMAND: ${{ inputs.test-command }}
+        ROBOT_OUTPUT: ${{ inputs.robot-output }}
+      run: |
+        # Validate inputs
+        set -euo pipefail
+        fail() { echo "::error::$*"; exit 1; }
+        case "$MODE" in
+          lab-up|run|lab-down|resolve|report) ;;
+          *)
+            fail "Invalid mode '$MODE'" \
+              "(expected lab-up, run, lab-down, resolve or report)"
+            ;;
+        esac
+        case "$MODE" in
+          lab-up|run|lab-down)
+            dir="${GITHUB_ACTION_PATH}/scripts"
+            for verb in up down; do
+              script="${dir}/lab-${verb}-${CSIT_BACKEND}.sh"
+              if [[ ! "$CSIT_BACKEND" =~ ^[a-z]+$ || ! -x "$script" ]]; then
+                fail "Unsupported backend '$CSIT_BACKEND'"
+              fi
+            done
+            ;;
+        esac
+        # lab-down only needs the lab ID that lab-up exported.
+        if [[ "$MODE" == "lab-up" || "$MODE" == "run" ]]; then
+          [[ "$PROJECT_NODES" =~ ^[1-9][0-9]*$ ]] \
+            || fail "project-nodes must be an integer >= 1," \
+                    "got '$PROJECT_NODES'"
+          [[ "$TOOLS_NODES" =~ ^[0-9]+$ ]] \
+            || fail "tools-nodes must be an integer, got '$TOOLS_NODES'"
+          case "$TOOLS_PRIVILEGED" in
+            true|false) ;;
+            *) fail "tools-privileged must be true or false" ;;
+          esac
+          # run-test.sh refuses GITHUB_*, RUNNER_* and LD_* from lab.env.
+          if [[ ! "$ENV_PREFIX" =~ ^[A-Z][A-Z0-9_]*$ ]] \
+              || [[ "$ENV_PREFIX" == TOOLS ]] \
+              || [[ "$ENV_PREFIX" =~ ^(GITHUB|RUNNER|LD)(_|$) ]]; then
+            fail "env-prefix must match [A-Z][A-Z0-9_]*, not be TOOLS" \
+                 "and not start with GITHUB, RUNNER or LD"
+          fi
+          if [[ "$CSIT_BACKEND" == "docker" ]]; then
+            [[ -n "$NODE_IMAGE" ]] \
+              || fail "node-image is required for mode '$MODE'"
+            if [[ "$TOOLS_NODES" -gt 0 && -z "$TOOLS_IMAGE" ]]; then
+              fail "tools-image is required when tools-nodes > 0"
+            fi
+          fi
+        fi
+        if [[ "$MODE" == "run" ]]; then
+          [[ -n "$TEST_COMMAND" ]] \
+            || fail "test-command is required for mode 'run'"
+          # Empty robot-output means the command's exit status decides.
+          if [[ -n "$ROBOT_OUTPUT" ]]; then
+            case "/${ROBOT_OUTPUT}/" in
+              *$'\n'*|*$'\r'*)
+                fail "robot-output must not contain a line break" ;;
+              //*|*/../*)
+                fail "robot-output must be a path inside the workspace" ;;
+            esac
+          fi
         fi
 
-        # Write the output using the multiline heredoc format with a random
-        # delimiter so that an input containing newlines cannot inject
-        # additional keys into $GITHUB_OUTPUT (output-file injection). The
-        # delimiter is built from shell-builtin randomness (no external
-        # tools such as openssl/uuidgen, which are not guaranteed on
-        # self-hosted runners) and regenerated until it is provably absent
-        # from the value being emitted.
-        delimiter="ghadelim_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
-        while [[ "$input" == *"$delimiter"* ]]; do
-          delimiter="ghadelim_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
-        done
-        {
-          printf '%s<<%s\n' 'output' "$delimiter"
-          printf '%s\n' "$input"
-          printf '%s\n' "$delimiter"
-        } >> "$GITHUB_OUTPUT"
-        echo "Action received: $input ✅"
-        echo "Action received: $input ✅" >> "$GITHUB_STEP_SUMMARY"
+    # A run tests whatever its command deploys; it resolves an artifact only
+    # when asked to, while resolve mode always does. Any coordinate counts as
+    # asking, so an incomplete set fails here instead of being ignored.
+    - name: Resolve artifact
+      id: resolve
+      if: >-
+        inputs.mode == 'resolve' || (inputs.mode == 'run' && (
+        inputs.artifact-url != '' || inputs.maven-repo-url != '' ||
+        inputs.group-id != '' || inputs.artifact-id != '' ||
+        inputs.artifact-version != '' || inputs.version-pom-url != ''))
+      shell: bash
+      env:
+        CSIT_ARTIFACT_URL: ${{ inputs.artifact-url }}
+        CSIT_MAVEN_REPO_URL: ${{ inputs.maven-repo-url }}
+        CSIT_GROUP_ID: ${{ inputs.group-id }}
+        CSIT_ARTIFACT_ID: ${{ inputs.artifact-id }}
+        CSIT_ARTIFACT_VERSION: ${{ inputs.artifact-version }}
+        CSIT_VERSION_POM_URL: ${{ inputs.version-pom-url }}
+        CSIT_ARTIFACT_EXTENSION: ${{ inputs.artifact-extension }}
+      run: |
+        set -euo pipefail
+        # GITHUB_ENV only reaches later steps, so have the resolver also
+        # write its values to a file this step can read for its outputs.
+        env_file="${RUNNER_TEMP}/csit-resolve.env"
+        : > "$env_file"
+        CSIT_ENV_FILE="$env_file" \
+          "${GITHUB_ACTION_PATH}/scripts/resolve-artifact.sh"
+        # Read as data: the values derive from caller input, so never source.
+        while IFS= read -r line; do
+          case "$line" in
+            ARTIFACT_URL=*) echo "artifact-url=${line#*=}" ;;
+            ARTIFACT_VERSION=*) echo "artifact-version=${line#*=}" ;;
+            ARTIFACT_FOLDER=*) echo "artifact-folder=${line#*=}" ;;
+          esac
+        done < "$env_file" >> "$GITHUB_OUTPUT"
+
+    - name: Bring up CSIT lab
+      id: lab
+      if: inputs.mode == 'run' || inputs.mode == 'lab-up'
+      shell: bash
+      env:
+        PROJECT_NODES: ${{ inputs.project-nodes }}
+        TOOLS_NODES: ${{ inputs.tools-nodes }}
+        CSIT_NODE_IMAGE: ${{ inputs.node-image }}
+        CSIT_TOOLS_IMAGE: ${{ inputs.tools-image }}
+        CSIT_TOOLS_PRIVILEGED: ${{ inputs.tools-privileged }}
+        CSIT_ENV_PREFIX: ${{ inputs.env-prefix }}
+        CSIT_NODE_PROMPT: ${{ inputs.node-prompt }}
+        CSIT_BACKEND: ${{ inputs.backend }}
+      # lab-up also writes the project-system-ip and lab-env-file outputs.
+      run: |
+        "${GITHUB_ACTION_PATH}/scripts/lab-up-${CSIT_BACKEND}.sh"
+
+    - name: Run CSIT
+      if: inputs.mode == 'run'
+      shell: bash
+      env:
+        CSIT_TEST_COMMAND: ${{ inputs.test-command }}
+        CSIT_EXTRA_ENV: ${{ inputs.extra-env }}
+        CSIT_ROBOT_OUTPUT: ${{ inputs.robot-output }}
+        ROBOT_PASS_THRESHOLD: ${{ inputs.robot-pass-threshold }}
+        ROBOT_UNSTABLE_THRESHOLD: ${{ inputs.robot-unstable-threshold }}
+        CSIT_JOB: ${{ inputs.job-name }}
+      run: |
+        "${GITHUB_ACTION_PATH}/scripts/run-test.sh"
+
+    - name: Tear down CSIT lab
+      if: always() && (inputs.mode == 'run' || inputs.mode == 'lab-down')
+      shell: bash
+      env:
+        CSIT_BACKEND: ${{ inputs.backend }}
+      run: |
+        "${GITHUB_ACTION_PATH}/scripts/lab-down-${CSIT_BACKEND}.sh"
+
+    # Jenkins gave each job a Robot plugin verdict and mailed the project.
+    # A fan-out of many jobs needs one readable page covering every job it
+    # dispatched, including any that produced no results.
+    - name: Report CSIT results
+      if: inputs.mode == 'report'
+      shell: bash
+      env:
+        RESULTS_DIR: ${{ inputs.results-dir }}
+        EXPECTED_JOBS: ${{ inputs.expected-jobs }}
+        HTML_DIR: ${{ inputs.html-dir }}
+        TITLE: ${{ inputs.title }}
+      run: |
+        set -euo pipefail
+        expected=""
+        if [ -n "${EXPECTED_JOBS}" ]; then
+            expected="${RUNNER_TEMP}/expected-jobs.txt"
+            # A JSON array of job objects (what the matrix was fed), or a
+            # plain newline-separated list of names. Accepting both means the
+            # orchestrator can hand over a merged list without reshaping it.
+            if jq -e 'type == "array"' >/dev/null 2>&1 \
+                <<<"${EXPECTED_JOBS}"; then
+                jq -r '.[] | if type == "object" then .job else . end' \
+                    <<<"${EXPECTED_JOBS}" >"${expected}"
+            else
+                printf '%s\n' "${EXPECTED_JOBS}" >"${expected}"
+            fi
+        fi
+        args=()
+        if [ -n "${HTML_DIR}" ]; then
+            args+=(--html "${HTML_DIR}" --title "${TITLE}")
+        fi
+        python3 "${GITHUB_ACTION_PATH}/scripts/robot-gate.py" \
+            --summary "${RESULTS_DIR}" "${expected}" "${args[@]}"

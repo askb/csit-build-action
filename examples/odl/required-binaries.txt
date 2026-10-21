@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Binaries the OpenDaylight tools image must carry, for
+# tests/test-node-tools.sh. Taken from the integration/test suites: the
+# first word of every Execute_Command* / Run Command On Remote System /
+# Run_Command_On_Controller call, minus shell builtins. The keyword has nine
+# spellings (_Should_Pass, _Passes, _At_Cwd, _At_Path, "And Log", ...); a
+# regex that misses one silently under-reports.
+#
+# apt-get is deliberately absent: the only suite call is
+# SSHKeywords.Install_Netstat, a fallback that never fires because netstat
+# is listed here. The tools image is built FROM node, so this list covers
+# both targets.
+awk
+bash
+cat
+curl
+git
+grep
+ip
+java
+ls
+mkdir
+mv
+netstat
+pkill
+ps
+python3
+rm
+sed
+service
+ssh-keygen
+sudo
+tar
+unzip
+virtualenv
+wget
+which
+xz
+cbench
+mn
+ovs-ofctl
+ovs-vsctl

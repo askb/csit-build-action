@@ -201,6 +201,15 @@ repos:
     hooks:
       - id: shellcheck
 
+  # Dockerfile linter. AleksaC/hadolint-py vendors the hadolint binary
+  # via pip so the hook works on pre-commit.ci (no Docker required).
+  # Configuration lives in .hadolint.yaml at the repo root.
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: 6e7504451511eaeb62a3e7f14d63b0296cbf86eb  # frozen: v2.15.1
+    hooks:
+      - id: hadolint
+        files: '(?i)(^|/)Dockerfile($|\.)'
+
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: 5b5dddc4fb0f83c3ea1fc5616fa63e115dce83e0  # frozen: v0.49.1
     hooks:

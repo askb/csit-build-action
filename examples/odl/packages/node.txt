@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# OpenDaylight CSIT controller node: stands in for the OpenStack "builder"
+# image that runs karaf.
+#
+# Covers what builder's common-functions.sh uses on a node (wget, unzip,
+# netstat, sshpass, the JDK's jstack) plus every binary the integration/test
+# suites shell out to over SSH, checked against the built image by
+# tests/test-node-tools.sh with ../required-binaries.txt.
+
+# The JDK the controller runs; JAVA_HOME follows it.
+openjdk-21-jdk-headless
+
+curl
+git
+# ClusterManagement isolates cluster members with /sbin/iptables.
+iptables
+net-tools
+python3
+python3-venv
+# netconf/scale/getmulti.robot runs `python getter.py`.
+python-is-python3
+sshpass
+unzip
+# SSHKeywords.Virtual_Env_Create runs the `virtualenv` binary by name;
+# python3-venv is not a substitute.
+virtualenv
+wget
+xz-utils

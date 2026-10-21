@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# CSIT lab nodes: SSH-reachable stand-ins for the VMs a CSIT job used to
+# boot. Two targets share one base:
+#
+#   --target node    sshd, sudo and the project's node packages
+#   --target tools   node plus the project's tools packages
+#
+# The image itself only carries what the lab needs: sshd, sudo, procps and
+# iproute2. Everything a project's suites shell out to comes from package
+# files the project supplies through a named build context:
+#
+#   docker build --build-context packages=<dir> --target node ...
+#
+# <dir>/node.txt and <dir>/tools.txt list Ubuntu packages, one per line
+# ('#' starts a comment). An optional <dir>/node.sh or <dir>/tools.sh runs
+# as root afterwards for anything without a package. Without the context
+# the build yields the bare lab image. examples/odl/packages is a full set.
+#
+# A JDK is a package like any other. When one is installed,
+# /usr/lib/jvm/csit-java points at it and lab-up hands that JAVA_HOME to the
+# test command as CSIT_NODE_JAVA_HOME.
+#
+# Supply chain: the base image is pinned by digest and Dependabot (docker
+# ecosystem) keeps the digest current. Distro packages are deliberately not
+# pinned (see .hadolint.yaml, DL3008); CI builds both targets and gates them
+# on an SBOM + Grype scan instead.
+#
+# Root: the nodes stand in for whole VMs. sshd must start as root to bind
+# port 22 and switch to the logged-in user, and suites run sudo on the
+# node, so there is no non-root USER (Trivy DS-0002). Containers only join
+# the lab's private docker network and publish no host ports.
+
+# Empty unless the caller passes --build-context packages=<dir>.
+FROM scratch AS packages
+
+FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS node
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY install-packages.sh /usr/local/sbin/csit-install-packages
+RUN --mount=type=bind,from=packages,target=/tmp/csit-packages \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        iproute2 \
+        openssh-server \
+        procps \
+        sudo \
+    && /usr/local/sbin/csit-install-packages node \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd \
+    && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+
+# Architecture and version neutral; only meaningful when a JDK is installed.
+ENV JAVA_HOME=/usr/lib/jvm/csit-java
+
+COPY node-entrypoint.sh /usr/local/bin/node-entrypoint.sh
+RUN chmod 755 /usr/local/bin/node-entrypoint.sh
+
+# No EXPOSE: lab nodes are reached over the lab network, never published.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["sh", "-c", "pgrep -x sshd >/dev/null && { ! command -v ovs-vsctl >/dev/null || ovs-vsctl show >/dev/null; }"]
+CMD ["/usr/local/bin/node-entrypoint.sh"]
+
+
+FROM node AS tools
+
+RUN --mount=type=bind,from=packages,target=/tmp/csit-packages \
+    apt-get update \
+    && /usr/local/sbin/csit-install-packages tools \
+    && rm -rf /var/lib/apt/lists/*

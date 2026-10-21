@@ -20,13 +20,13 @@ concurrency:
 permissions: {}
 
 jobs:
-  ### Test the GitHub Action in this Repository ###
-  tests:
-    name: "Test local GitHub Action"
+  ### Unit tests for the scripts the action shells out to ###
+  unit:
+    name: "Unit tests"
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 10 # Increase this timeout value as needed
+    timeout-minutes: 10
     steps:
       # Load the egress allow-list out-of-band from the
       # organisation's .github repository and publish it as
@@ -50,27 +50,472 @@ jobs:
         with:
           persist-credentials: false
 
-      # Perform setup prior to running test(s)
-      - name: "Testing setup step"
+      # Covers both robot-gate modes, including the cases that must FAIL:
+      # a job under its pass threshold, an unparsable output.xml and a job
+      # that produced no results at all. Asserting the script's exit code
+      # directly is cheaper and stricter than a continue-on-error step.
+      - name: "Robot result gate"
         shell: bash
         run: |
-          # Testing setup step
-          echo "Testing setup step"
-          echo "Testing setup step/summary output" >> "$GITHUB_STEP_SUMMARY"
+          # Robot result gate
+          tests/test-robot-gate.sh
+
+      # Explicit URLs, pinned and snapshot Maven coordinates and the
+      # version-pom lookup, against a throwaway repository on localhost.
+      - name: "Artifact resolution"
+        shell: bash
+        run: |
+          # Artifact resolution
+          tests/test-resolve.sh
+
+      # Lab and extra-env plumbing, the deny-list and both verdict modes.
+      - name: "Test command runner"
+        shell: bash
+        run: |
+          # Test command runner
+          tests/test-run-test.sh
+
+      # Lab ID export and the lab ssh block, with docker stubbed out.
+      - name: "Lab bring-up ssh config"
+        shell: bash
+        run: |
+          # Lab bring-up ssh config
+          tests/test-lab-up.sh
+
+      # The ssh config edit at teardown, with docker stubbed out.
+      - name: "Lab teardown ssh config"
+        shell: bash
+        run: |
+          # Lab teardown ssh config
+          tests/test-lab-down.sh
+
+      # Each step that launches a bundled script must survive an action
+      # checkout path containing a space.
+      - name: "Action step quoting"
+        shell: bash
+        run: |
+          # Action step quoting
+          tests/test-action-steps.sh
+
+  ### Build, check and scan the node images, then run a lab on them ###
+  image:
+    name: "Node images"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      # Ubuntu carries many unfixed low/medium CVEs; gate on high and up.
+      GRYPE_FAIL_ON: "high"
+    steps:
+      # Audit (not block): the image builds run apt inside BuildKit
+      # containers, whose DNS bypasses harden-runner's resolver, so the
+      # allow-listed Ubuntu mirrors resolve to IPs block mode never
+      # learns and refuses. Same exception as sigul-docker-k8s's image
+      # build; the lighter jobs keep block mode.
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: 'audit'
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Both targets with the OpenDaylight package set, exactly as a
+      # project builds them, plus the bare image with no package context.
+      - name: "Build node and tools images"
+        id: images
+        shell: bash
+        run: |
+          # Build node and tools images
+          set -euo pipefail
+          for target in node tools; do
+              docker build \
+                  --build-context packages=examples/odl/packages \
+                  --target "$target" -t "csit-${target}:test" \
+                  -f docker/Dockerfile.node docker
+          done
+          docker build --target node -t csit-bare:test \
+              -f docker/Dockerfile.node docker
+          # lab-up takes only pinned images; a local build's ID is one.
+          for name in node tools bare; do
+              id="$(docker image inspect -f '{{.Id}}' "csit-${name}:test")"
+              echo "${name}=${id}"
+          done >> "$GITHUB_OUTPUT"
+
+      - name: "Check the tools the suites need"
+        shell: bash
+        run: |
+          # Check the tools the suites need
+          set -euo pipefail
+          tests/test-node-tools.sh csit-tools:test
+          # The bare image still has to carry the lab itself.
+          tests/test-node-tools.sh csit-bare:test /dev/null
+
+      # Each image gets its own SBOM: tools is built FROM node but may
+      # upgrade what it inherits, and the bare image is a separate build.
+      - name: "Generate SBOM (csit-node)"
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: "csit-node:test"
+          format: spdx-json
+          output-file: sbom-csit-node.spdx.json
+          # Uploaded below together with the scan results.
+          upload-artifact: false
+
+      - name: "Generate SBOM (csit-tools)"
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: "csit-tools:test"
+          format: spdx-json
+          output-file: sbom-csit-tools.spdx.json
+          # Uploaded below together with the scan results.
+          upload-artifact: false
+
+      - name: "Generate SBOM (csit-bare)"
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: "csit-bare:test"
+          format: spdx-json
+          output-file: sbom-csit-bare.spdx.json
+          # Uploaded below together with the scan results.
+          upload-artifact: false
+
+      - name: "Install Grype"
+        id: grype
+        # yamllint disable-line rule:line-length
+        uses: anchore/scan-action/download-grype@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
+        with:
+          cache-db: "true"
+
+      - name: "Grype scan SBOMs"
+        shell: bash
+        env:
+          GRYPE_CMD: ${{ steps.grype.outputs.cmd }}
+          FAIL_ON: ${{ env.GRYPE_FAIL_ON }}
+          NO_BLOCK_AUDIT_FAIL: >-
+            ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
+        run: |
+          # Grype scan SBOMs
+          set -uo pipefail
+          # Every image is scanned before deciding, so one report does not
+          # hide another's findings.
+          found=""
+          for name in node tools bare; do
+            grype_exit=0
+            "${GRYPE_CMD}" \
+              -o "json=grype-csit-${name}.json" \
+              -o "table=grype-csit-${name}.txt" \
+              --fail-on "${FAIL_ON}" \
+              "sbom:sbom-csit-${name}.spdx.json" || grype_exit=$?
+            echo "---> csit-${name}"
+            cat "grype-csit-${name}.txt" 2>/dev/null || true
+            # Grype exits 2 when matches reach --fail-on; anything else
+            # non-zero is a scanner error and always fails.
+            case "$grype_exit" in
+              0) ;;
+              2) found="${found} csit-${name}" ;;
+              *)
+                echo "::error::Grype failed on csit-${name} (${grype_exit})"
+                exit "$grype_exit" ;;
+            esac
+          done
+          if [ -n "$found" ]; then
+            if [ "$NO_BLOCK_AUDIT_FAIL" = "true" ]; then
+              echo "::warning::Grype found ${FAIL_ON}+ vulnerabilities" \
+                "in${found} (not blocking: NO_BLOCK_AUDIT_FAIL)"
+              exit 0
+            fi
+            echo "::error::Grype found ${FAIL_ON}+ vulnerabilities in${found}"
+            exit 1
+          fi
+
+      - name: "Upload SBOMs and scan results"
+        if: always()
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sbom-and-scan-csit-images
+          path: |
+            sbom-csit-*.spdx.json
+            grype-csit-*.json
+            grype-csit-*.txt
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # The lab directory lives under RUNNER_TEMP; a space there must not
+      # split the paths lab-up writes into the ssh config.
+      - name: "Create a lab parent with a space"
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/csit space"
+
+      # A real lab on the just-built images: per-lab key, strict host key
+      # checking against the containers' own keys, and a clean teardown.
+      - name: "Running local action: ${{ github.repository }} [Lab Up]"
+        uses: $/
+        id: lab
+        env:
+          RUNNER_TEMP: "${{ runner.temp }}/csit space"
+        with:
+          mode: "lab-up"
+          node-image: "${{ steps.images.outputs.node }}"
+          tools-image: "${{ steps.images.outputs.tools }}"
+          tools-nodes: "1"
+          tools-privileged: "true"
+          env-prefix: "ODL"
+
+      - name: "Validated local action: ${{ github.repository }} [Lab Up]"
+        shell: bash
+        env:
+          PROJECT_IP: ${{ steps.lab.outputs.project-system-ip }}
+          LAB_ENV: ${{ steps.lab.outputs.lab-env-file }}
+        run: |
+          # Lab nodes must be reachable with strict host key checking
+          set -euo pipefail
+          test -n "$PROJECT_IP"
+          test -s "$LAB_ENV"
+          # The prefix aliases the generic names for the project's suites.
+          test "$PROJECT_SYSTEM_IP" = "$PROJECT_IP"
+          test "$ODL_SYSTEM_IP" = "$PROJECT_IP"
+          test "$NUM_ODL_SYSTEM" = "1"
+          test "$CSIT_NODE_JAVA_HOME" = "/usr/lib/jvm/csit-java"
+          # shellcheck disable=SC2029 # the path is the node's, known here
+          ssh "$PROJECT_IP" "${CSIT_NODE_JAVA_HOME}/bin/java -version"
+          ssh "$TOOLS_SYSTEM_IP" 'sudo ovs-vsctl show'
+          test ! -e "${HOME}/.ssh/id_rsa" \
+              || { echo "::error::lab-up wrote ~/.ssh/id_rsa"; exit 1; }
+          grep -q "StrictHostKeyChecking yes" "${HOME}/.ssh/config"
+          grep -q "ForwardAgent no" "${HOME}/.ssh/config"
+          redirect='^(proxyjump|remotecommand) '
+          if ssh -G "$PROJECT_IP" | grep -qiE "$redirect"; then
+              echo "::error::lab hosts inherit a proxy or remote command"
+              exit 1
+          fi
+
+      - name: "Running local action: ${{ github.repository }} [Lab Down]"
+        if: always()
+        uses: $/
+        env:
+          RUNNER_TEMP: "${{ runner.temp }}/csit space"
+        with:
+          mode: "lab-down"
+
+      - name: "Validated local action: ${{ github.repository }} [Lab Down]"
+        shell: bash
+        run: |
+          # Teardown must leave nothing behind
+          set -euo pipefail
+          if docker ps -a --format '{{.Names}}' \
+              | grep -q "^csit-${CSIT_LAB_ID}-"; then
+              echo "::error::lab containers survived lab-down"
+              exit 1
+          fi
+          if grep -q "csit-lab ${CSIT_LAB_ID}" "${HOME}/.ssh/config"; then
+              echo "::error::ssh config block survived lab-down"
+              exit 1
+          fi
+          test ! -e "${RUNNER_TEMP}/csit space/csit-lab-${CSIT_LAB_ID}"
+
+      # The whole run path on the bare image: lab up, the caller's command
+      # with lab.env and extra-env, the Robot gate and teardown. The
+      # command stands in for a suite and writes a passing output.xml.
+      - name: "Running local action: ${{ github.repository }} [Run]"
+        uses: $/
+        id: run
+        with:
+          mode: "run"
+          node-image: "${{ steps.images.outputs.bare }}"
+          project-nodes: "2"
+          env-prefix: "ODL"
+          job-name: "self-test"
+          extra-env: |
+            # Comments and blank lines are skipped.
+
+            SUITE_GREETING=hello world
+          test-command: |
+            set -euo pipefail
+            test "$NUM_ODL_SYSTEM" = 2
+            test "$ODL_SYSTEM_2_IP" = "$PROJECT_SYSTEM_2_IP"
+            test "$SUITE_GREETING" = "hello world"
+            test "$PWD" = "$WORKSPACE"
+            ssh "$ODL_SYSTEM_2_IP" true
+            printf '%s\n' '<robot><statistics><total>' \
+              '<stat pass="3" fail="0">All Tests</stat>' \
+              '</total></statistics></robot>' > output.xml
+
+      - name: "Validated local action: ${{ github.repository }} [Run]"
+        shell: bash
+        run: |
+          # The gate must have passed and the lab must be gone
+          set -euo pipefail
+          test -s robot-gate.json
+          grep -q '"ok": true' robot-gate.json
+          if docker ps -a --format '{{.Names}}' \
+              | grep -q "^csit-${CSIT_LAB_ID}-"; then
+              echo "::error::run left lab containers behind"
+              exit 1
+          fi
+
+      # yamllint disable-line rule:line-length
+      - name: "Running local action: ${{ github.repository }} [Exit status]"
+        uses: $/
+        with:
+          mode: "run"
+          node-image: "${{ steps.images.outputs.bare }}"
+          project-nodes: "1"
+          robot-output: ""
+          test-command: |
+            set -euo pipefail
+            rm -f robot-gate.json
+            ssh "$PROJECT_SYSTEM_IP" true
+
+      - name: "Validated local action: ${{ github.repository }} [Exit status]"
+        shell: bash
+        run: |
+          # Without robot-output the exit status decides; no gate runs
+          set -euo pipefail
+          if [ -e robot-gate.json ]; then
+              echo "::error::robot gate ran with robot-output empty"
+              exit 1
+          fi
+
+      # Coordinates without maven-repo-url must fail resolution rather than
+      # skip it, so the command never tests whatever it deploys by default.
+      # yamllint disable-line rule:line-length
+      - name: "Running local action: ${{ github.repository }} [Partial Coordinates]"
+        uses: $/
+        id: partial
+        continue-on-error: true
+        with:
+          mode: "run"
+          node-image: "${{ steps.images.outputs.bare }}"
+          project-nodes: "1"
+          robot-output: ""
+          group-id: "org.example"
+          artifact-id: "example"
+          artifact-version: "1.0.0"
+          test-command: "touch partial-coordinates-ran"
+
+      - name: "Validate partial coordinates failed"
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.partial.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+              echo "::error::partial Maven coordinates should fail resolution"
+              exit 1
+          fi
+          if [ -e partial-coordinates-ran ]; then
+              echo "::error::test command ran without its artifact"
+              exit 1
+          fi
+
+  ### Test the GitHub Action in this Repository ###
+  tests:
+    name: "Test local GitHub Action"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@51ef68401547a8b648275129b9a21544612596d5  # v0.13.1
+        with:
+          config: '@56d70f0eae78f334a598d1ffe071d4b821517b22'  # v0.17.1
+
+      # Harden the runner with the just-loaded allow-list.
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: "Checkout repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A green job, a job under threshold and a job that never wrote
+      # results -- the three shapes the release report has to render.
+      - name: "Build a results fixture"
+        shell: bash
+        run: |
+          # Build a results fixture
+          set -euo pipefail
+          mkdir -p results/job-green results/job-red results/job-empty
+          cat > results/job-green/output.xml <<'XML'
+          <robot name="Green"><statistics><total>
+          <stat pass="9" fail="0">All Tests</stat>
+          </total></statistics></robot>
+          XML
+          cat > results/job-red/output.xml <<'XML'
+          <robot name="Red"><statistics><total>
+          <stat pass="55" fail="5">All Tests</stat>
+          </total></statistics></robot>
+          XML
 
       - name: "Running local action: ${{ github.repository }}"
         uses: $/
         with:
-          input: "test input 💬"
+          mode: "report"
+          results-dir: "results"
+          # job-gone has no directory: it must still appear as an error row.
+          expected-jobs: '["job-green","job-red","job-empty","job-gone"]'
+          html-dir: "site"
+          title: "CSIT action self-test"
 
       - name: "Validated local action: ${{ github.repository }}"
         shell: bash
-        env:
-          REPO: ${{ github.repository }}
         run: |
           # Local action validation
-          echo "Validated local action: $REPO"
-          echo "Validation step summary output" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          for f in site/index.html site/report.json site/csit-summary.md; do
+              test -s "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          # Every dispatched job must be in the report, including the one
+          # that produced nothing -- silently dropping it would turn a
+          # crashed job into a green release.
+          for job in job-green job-red job-empty job-gone; do
+              grep -q "$job" site/report.json \
+                  || { echo "::error::$job missing from report"; exit 1; }
+          done
+          echo "Report rendered all 4 jobs ✅" >> "$GITHUB_STEP_SUMMARY"
+
+      # An explicit artifact URL resolves offline; the outputs must be set
+      # in the same invocation, not only exported for later steps.
+      - name: "Running local action: ${{ github.repository }} [Resolve]"
+        uses: $/
+        id: resolve
+        with:
+          mode: "resolve"
+          # yamllint disable-line rule:line-length
+          artifact-url: "https://example.org/repo/org/example/artifact/1.0.0/artifact-1.0.0.zip"
+
+      - name: "Validated local action: ${{ github.repository }} [Resolve]"
+        shell: bash
+        env:
+          ARTIFACT_FOLDER: ${{ steps.resolve.outputs.artifact-folder }}
+          ARTIFACT_VERSION: ${{ steps.resolve.outputs.artifact-version }}
+        run: |
+          # Resolve outputs must be populated by the same invocation
+          set -euo pipefail
+          if [ "$ARTIFACT_FOLDER" != "artifact-1.0.0" ] \
+              || [ "$ARTIFACT_VERSION" != "1.0.0" ]; then
+              echo "::error::artifact-folder='${ARTIFACT_FOLDER}'" \
+                  "artifact-version='${ARTIFACT_VERSION}'"
+              exit 1
+          fi
 
       # yamllint disable-line rule:line-length
       - name: "Running local action: ${{ github.repository }} [Override Failure]"
@@ -78,7 +523,7 @@ jobs:
         id: failure
         continue-on-error: true
         with:
-          invalid_input: "Some garbage"
+          mode: "invalid-mode"
 
       # Failure testing is also important
       - name: "Error if step above did NOT fail"
@@ -88,3 +533,78 @@ jobs:
           # Error if step above did NOT fail
           echo "Error: previous test step did NOT fail ❌"
           exit 1
+
+      # A failed run must not leave an earlier run's passing results behind
+      # for an artifact upload and report mode to approve.
+      - name: "Plant stale passing results"
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '<robot/>' > "${GITHUB_WORKSPACE}/output.xml"
+          printf '{"pass_threshold": 0.0, "ok": true}\n' \
+            > "${GITHUB_WORKSPACE}/robot-gate.json"
+
+      # yamllint disable-line rule:line-length
+      - name: "Running local action: ${{ github.repository }} [Stale Results]"
+        uses: $/
+        id: stale
+        continue-on-error: true
+        with:
+          mode: "run"
+          node-image: "csit-node:test"
+          test-command: "true"
+          project-nodes: "0"
+
+      - name: "Validate stale results were cleared"
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.stale.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+              echo "::error::project-nodes=0 should fail validation"
+              exit 1
+          fi
+          for f in output.xml robot-gate.json; do
+              if [ -e "${GITHUB_WORKSPACE}/${f}" ]; then
+                  echo "::error::stale ${f} survived a failed run"
+                  exit 1
+              fi
+          done
+
+      # A robot-output directory that symlinks out of the workspace must be
+      # refused before the clear step deletes anything there.
+      - name: "Plant a symlinked results directory"
+        shell: bash
+        run: |
+          set -euo pipefail
+          outside="${RUNNER_TEMP}/csit-outside"
+          mkdir -p "$outside"
+          echo keep > "${outside}/log.html"
+          ln -sfn "$outside" "${GITHUB_WORKSPACE}/linked-results"
+
+      # yamllint disable-line rule:line-length
+      - name: "Running local action: ${{ github.repository }} [Symlinked Output]"
+        uses: $/
+        id: symlinked
+        continue-on-error: true
+        with:
+          mode: "run"
+          node-image: "csit-node:test"
+          test-command: "true"
+          robot-output: "linked-results/output.xml"
+
+      - name: "Validate the symlinked output was refused"
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.symlinked.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+              echo "::error::a symlinked robot-output directory was accepted"
+              exit 1
+          fi
+          if [ "$(cat "${RUNNER_TEMP}/csit-outside/log.html")" != keep ]; then
+              echo "::error::the clear step deleted outside the workspace"
+              exit 1
+          fi

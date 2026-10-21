@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# hadolint configuration for the CSIT lab node images.
+
+# Globally ignored rules with justification:
+#
+#   DL3008 - Pin versions in apt-get install.
+#     The ubuntu base image is pinned by digest and Dependabot bumps
+#     that digest weekly. Pinning every apt package version as well
+#     would break each build once the archive drops the pinned version
+#     and gives little real reproducibility. CI generates an SBOM and
+#     runs a Grype scan against every image build instead.
+#
+#   DL3002 - Last USER should not be root.
+#     Lab nodes run sshd, which needs root to bind port 22 and switch
+#     to the login user. Dockerfile.node documents this in its header.
+ignored:
+  - DL3008
+  - DL3002
+
+failure-threshold: error
